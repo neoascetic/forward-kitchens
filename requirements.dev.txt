@@ -1,0 +1,5 @@
+boto3
+
+# for unit tests
+pytest
+pyyaml

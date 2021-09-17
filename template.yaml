@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: forward-kitchens
+
+Globals:
+  Function:
+    Timeout: 3
+
+Resources:
+  OrdersApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: production
+      OpenApiVersion: 3.0.2
+      # FIXME: we need real auth here!
+
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: orders
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        AttributeName: expirationTs # no need to cleanup manually
+        Enabled: true
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+        - AttributeName: pickupHourTs
+          AttributeType: N
+        - AttributeName: pickupTimeTsOrderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId # order id should be unique - thus it is the primary key
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        # for faster lookups, we're going to use separate index
+        - IndexName: pickupHourTsPickupTimeTsOrderIdIndex
+          KeySchema:
+            # pickup time ts roudned to the beginning of an hour,
+            # for us to be able to do query lookups
+            - AttributeName: pickupHourTs
+              KeyType: HASH
+            # this is to fullfill the uniqueness + sorting (DDB will sort it by the timestamp for us)
+            - AttributeName: pickupTimeTsOrderId
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  CreateOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: orders/
+      Handler: app.create_order_handler
+      Runtime: python3.9
+      Events:
+        orders:
+          Type: Api
+          Properties:
+            Path: /orders/create
+            Method: post
+            RestApiId: !Ref OrdersApi
+      Environment:
+        Variables:
+          DB_ORDERS_TABLE: !Ref OrdersTable
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref OrdersTable 
+
+  ListActiveOrdersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: orders/
+      Handler: app.list_active_orders_handler
+      Runtime: python3.9
+      Events:
+        orders:
+          Type: Api
+          Properties:
+            Path: /orders/active
+            Method: get
+            RestApiId: !Ref OrdersApi
+      Environment:
+        Variables:
+          DB_ORDERS_TABLE: !Ref OrdersTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref OrdersTable 
+
+Outputs:
+  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
+  # Find out more about other implicit resources you can reference within SAM
+  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
+  OrdersApi:
+    Description: "API Gateway endpoint URL for Prod stage for Orders functions"
+    Value: !Sub "https://${OrdersApi}.execute-api.${AWS::Region}.amazonaws.com/production/orders/"
